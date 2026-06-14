@@ -1,7 +1,7 @@
 services:
   db:
     image: postgres:16-alpine
-    container_name: movie_db
+    container_name: movie_db_v2
     restart: unless-stopped
     environment:
       POSTGRES_DB: movie_automator
@@ -18,13 +18,13 @@ services:
   backend:
     image: ghcr.io/hariharan-durairaj/tamil-movies-scrapper-2:latest
     build: .
-    container_name: movie_backend
+    container_name: movie_backend_v2
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - "8585:8585"
+      - "8586:8585"
     # Chrome inside Docker needs a big /dev/shm and SYS_ADMIN for its sandbox
     shm_size: "2gb"
     cap_add:
