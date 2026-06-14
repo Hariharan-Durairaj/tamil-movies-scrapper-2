@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: movie_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: movie_automator
+      POSTGRES_USER: movie_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-movie_password}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U movie_user -d movie_automator"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: ghcr.io/hariharan-durairaj/tamil-movies-scrapper-2:latest
+    build: .
+    container_name: movie_backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8585:8585"
+    # Chrome inside Docker needs a big /dev/shm and SYS_ADMIN for its sandbox
+    shm_size: "2gb"
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: movie_automator
+      DB_USER: movie_user
+      DB_PASSWORD: ${DB_PASSWORD:-movie_password}
+      PORT: "8585"
+    volumes:
+      - app_data:/app/data
+
+volumes:
+  pg_data:
+  app_data:

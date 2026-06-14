@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tamil Movie Automator</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <h1>🎬 Automator</h1>
+    <a href="#dashboard" class="nav-link" data-page="dashboard">Dashboard</a>
+    <a href="#library" class="nav-link" data-page="library">Library</a>
+    <a href="#search" class="nav-link" data-page="search">Search</a>
+    <a href="#review" class="nav-link" data-page="review">Review <span id="review-badge" class="badge hidden"></span></a>
+    <a href="#settings" class="nav-link" data-page="settings">Settings</a>
+    <a href="#logs" class="nav-link" data-page="logs">Logs</a>
+    <div class="sidebar-footer">
+      <div id="domain-indicator" class="muted small"></div>
+    </div>
+  </nav>
+
+  <main class="content">
+    <!-- Dashboard -->
+    <section id="page-dashboard" class="page">
+      <h2>Dashboard</h2>
+      <div id="stats-cards" class="cards"></div>
+      <div class="panel">
+        <h3>Actions</h3>
+        <div class="row gap">
+          <button id="btn-scan" class="btn primary">Scan forum now</button>
+          <button id="btn-radarr-sync" class="btn">Sync Radarr library</button>
+          <button id="btn-domain" class="btn">Check domain</button>
+          <button id="btn-domain-force" class="btn">Force domain search (Chrome)</button>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Forum library full scan</h3>
+        <div id="fullscan-status" class="muted"></div>
+        <div class="row gap" style="margin-top:10px">
+          <button id="btn-fullscan-start" class="btn primary">Start / Resume</button>
+          <button id="btn-fullscan-stop" class="btn warn">Stop</button>
+          <button id="btn-fullscan-reset" class="btn danger">Reset progress</button>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Recently added</h3>
+        <div id="recent-movies" class="movie-grid small-grid"></div>
+      </div>
+    </section>
+
+    <!-- Library -->
+    <section id="page-library" class="page hidden">
+      <h2>Library</h2>
+      <div class="row gap wrap filters">
+        <input id="lib-search" class="input" placeholder="Filter by title…">
+        <select id="lib-status" class="input">
+          <option value="">All statuses</option>
+          <option value="sent">Downloaded</option>
+          <option value="qualified">Qualified</option>
+          <option value="rejected">Rejected</option>
+          <option value="needs_review">Needs review</option>
+          <option value="unmatched">Unmatched</option>
+          <option value="library">Library (catalog)</option>
+          <option value="in_radarr">In Radarr</option>
+          <option value="failed">Failed</option>
+        </select>
+        <select id="lib-tamil" class="input">
+          <option value="">All languages</option>
+          <option value="true">Tamil originals only</option>
+          <option value="false">Dubs / others</option>
+        </select>
+        <select id="lib-sort" class="input">
+          <option value="created_desc">Newest first</option>
+          <option value="rating_desc">Rating</option>
+          <option value="year_desc">Year</option>
+          <option value="title_asc">Title A-Z</option>
+        </select>
+      </div>
+      <div id="lib-grid" class="movie-grid"></div>
+      <div class="row center"><button id="lib-more" class="btn hidden">Load more</button></div>
+    </section>
+
+    <!-- Search -->
+    <section id="page-search" class="page hidden">
+      <h2>Forum search</h2>
+      <div class="row gap">
+        <input id="search-input" class="input grow" placeholder="Movie name…">
+        <button id="search-btn" class="btn primary">Search</button>
+      </div>
+      <p class="muted small">Only results that actually contain torrents are shown.</p>
+      <div id="search-results"></div>
+    </section>
+
+    <!-- Review -->
+    <section id="page-review" class="page hidden">
+      <h2>Review queue</h2>
+      <p class="muted">Movies with ambiguous metadata matches. Pick the correct film, then download if wanted.</p>
+      <div id="review-list"></div>
+    </section>
+
+    <!-- Settings -->
+    <section id="page-settings" class="page hidden">
+      <h2>Settings</h2>
+      <div id="settings-form"></div>
+      <div class="row gap" style="margin-top:16px">
+        <button id="settings-save" class="btn primary">Save</button>
+        <button id="test-radarr" class="btn">Test Radarr</button>
+        <button id="test-qbit" class="btn">Test qBittorrent</button>
+      </div>
+      <div id="settings-msg" class="muted" style="margin-top:8px"></div>
+    </section>
+
+    <!-- Logs -->
+    <section id="page-logs" class="page hidden">
+      <h2>Logs</h2>
+      <div class="row gap">
+        <select id="log-level" class="input">
+          <option value="">All levels</option>
+          <option>INFO</option><option>WARNING</option><option>ERROR</option><option>DEBUG</option>
+        </select>
+        <button id="log-refresh" class="btn">Refresh</button>
+      </div>
+      <div id="log-list" class="log-list"></div>
+    </section>
+  </main>
+</div>
+
+<!-- Movie detail modal -->
+<div id="modal" class="modal hidden">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div id="modal-content"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>

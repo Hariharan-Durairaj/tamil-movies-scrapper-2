@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+data/
+logs/
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+tamil-movies-scrapper-old/
