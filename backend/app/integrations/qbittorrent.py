@@ -19,7 +19,13 @@ class QBittorrentClient:
             r = self.session.post(f"{self.url}/api/v2/auth/login",
                                   data={"username": self.username,
                                         "password": self.password}, timeout=10)
-            self.logged_in = r.status_code == 200 and r.text.strip().lower() == "ok."
+            # 204 = qBittorrent has "Bypass authentication for clients on localhost"
+            # enabled, so the session is already authorized by IP (empty body, no
+            # username/password check). Treat it as a successful login.
+            self.logged_in = (
+                r.status_code == 204
+                or (r.status_code == 200 and r.text.strip().lower() == "ok.")
+            )
             if not self.logged_in:
                 log.warning(f"qBittorrent login failed: HTTP {r.status_code} {r.text[:100]}")
             return self.logged_in
@@ -73,10 +79,4 @@ class QBittorrentClient:
         if not self._ensure_login():
             return []
         try:
-            params = {"category": category} if category else {}
-            r = self.session.get(f"{self.url}/api/v2/torrents/info",
-                                 params=params, timeout=15)
-            return r.json() if r.status_code == 200 else []
-        except Exception as e:
-            log.warning(f"qBittorrent list error: {e}")
-            return []
+            params = {"category": category} if ca

@@ -359,12 +359,4 @@ async function loadLogs() {
     $("#log-list").innerHTML = logs.map((l) => `
       <div class="log-row"><span class="lv lv-${esc(l.level)}">${esc(l.level)}</span>
         <span class="ts">${esc(l.created_at.replace("T", " ").slice(0, 19))}</span>
-        <span>${esc(l.message)}${l.context ? ` <span class="ctx">${esc(JSON.stringify(l.context)).slice(0, 300)}</span>` : ""}</span>
-      </div>`).join("");
-  } catch (e) { toast(e.message, true); }
-}
-$("#log-refresh").onclick = loadLogs;
-$("#log-level").addEventListener("change", loadLogs);
-
-/* ── boot ───────────────────────────────────────────────────────────── */
-navigate();
+        <span>${esc(l.mes

@@ -41,4 +41,4 @@ services:
 
 volumes:
   pg_data:
-  app_data:
+  app_

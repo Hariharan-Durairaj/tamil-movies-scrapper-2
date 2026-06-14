@@ -37,9 +37,4 @@ class EnvSettings(BaseSettings):
 
     @property
     def torrents_dir(self) -> Path:
-        return self.data_dir / "torrents"
-
-
-env = EnvSettings()
-env.posters_dir.mkdir(parents=True, exist_ok=True)
-env.torrents_dir.mkdir(parents=True, exist_ok=True)
+        return self.data_dir / "torr

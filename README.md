@@ -61,10 +61,4 @@ backend/app/
   pipeline/            processor (state machine), scanner (daily / full / search)
   scheduler.py         APScheduler jobs
   api/routes.py        REST API
-backend/tests/         unit tests on saved forum HTML fixtures
-frontend/              single-page UI (no build step)
-```
-
-## Movie statuses
-
-`discovered → matched | needs_review | unmatched → qualified | rejected → sent | failed`, plus `library` for catalog-only entries. Every transition is logged (Logs page). Rejected and needs-review movies keep a one-click "Download anyway".
+backend/tests/         unit tests on saved forum H

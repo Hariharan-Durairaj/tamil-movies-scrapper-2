@@ -81,19 +81,4 @@ def reload() -> None:
             h, m = _parse_hhmm(st.get(session, "radarr_sync_time") or "05:45", "05:45")
             scheduler.add_job(job_radarr_sync, "cron", hour=h, minute=m,
                               id="radarr_sync")
-            log.info(f"Scheduled Radarr sync at {h:02d}:{m:02d}")
-    scheduler.add_job(job_clean_logs, "cron", hour=3, minute=0, id="clean_logs")
-
-
-def run_in_background(fn, job_id: str, **kwargs) -> bool:
-    """Fire-and-forget job (used for manual scans from the UI)."""
-    if scheduler.get_job(job_id):
-        return False
-    scheduler.add_job(fn, id=job_id, kwargs=kwargs,
-                      next_run_time=datetime.now(timezone.utc))
-    return True
-
-
-def start() -> None:
-    reload()
-    scheduler.start()
+            log.
