@@ -28,7 +28,7 @@ cd tamil-movies-scrapper-2
 DB_PASSWORD=changeme docker compose up -d
 ```
 
-Open `http://<host>:8585` (port 8585 — won't clash with the old project), then in **Settings** fill in:
+Open `http://<host>:8586` (port 8586 — won't clash with the old project), then in **Settings** fill in:
 
 1. `tmdb_api_key` (free at themoviedb.org) and optionally `omdb_api_key`
 2. `radarr_url` + `radarr_api_key` (use **Test Radarr** — it lists your quality profile IDs)
@@ -43,7 +43,7 @@ The GitHub Actions workflow builds and pushes the image to GHCR on every push to
 pip install -r requirements.txt
 cp .env.example .env          # point DB_HOST at a local postgres
 cd backend
-python -m uvicorn app.main:app --reload --port 8585
+python -m uvicorn app.main:app --reload --port 8586
 ```
 
 Run tests: `cd backend && python -m pytest tests/ -q`
