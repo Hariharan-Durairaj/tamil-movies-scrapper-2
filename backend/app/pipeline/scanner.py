@@ -220,4 +220,80 @@ def sync_radarr() -> dict:
             if tmdb_id:
                 movie = (session.query(Movie)
                          .filter(Movie.tmdb_id == tmdb_id).one_or_none())
-            if movie is None and title
+            if movie is None and title:
+                q = session.query(Movie).filter(
+                    func.lower(Movie.title) == title.lower())
+                q = (q.filter(Movie.year == year) if year is not None
+                     else q.filter(Movie.year.is_(None)))
+                movie = q.one_or_none()
+
+            rating = None
+            ratings = rm.get("ratings") or {}
+            if isinstance(ratings.get("imdb"), dict):
+                rating = ratings["imdb"].get("value")
+
+            if movie:
+                movie.added_to_radarr = True
+                movie.tmdb_id = movie.tmdb_id or tmdb_id
+                movie.imdb_id = movie.imdb_id or imdb_id
+                if movie.is_tamil_original is None and lang:
+                    movie.is_tamil_original = (lang == "Tamil")
+                updated += 1
+            else:
+                session.add(Movie(
+                    title=title, year=year, source="radarr_sync",
+                    status=MovieStatus.IN_RADARR,
+                    matched_title=title, tmdb_id=tmdb_id, imdb_id=imdb_id,
+                    rating=rating, rating_source="radarr" if rating else None,
+                    original_language={"Tamil": "ta", "Telugu": "te", "Hindi": "hi",
+                                       "Malayalam": "ml", "Kannada": "kn",
+                                       "English": "en"}.get(lang),
+                    is_tamil_original=(lang == "Tamil") if lang else None,
+                    added_to_radarr=True,
+                    rejection_reason=("already in Radarr (downloaded)"
+                                      if rm.get("hasFile")
+                                      else "already in Radarr (monitored)"),
+                ))
+                added += 1
+        session.commit()
+
+    processor.invalidate_radarr_cache()
+    log.info(f"Radarr sync: {added} imported, {updated} linked",
+             radarr_total=len(radarr_movies))
+    return {"ok": True, "imported": added, "linked": updated,
+            "radarr_total": len(radarr_movies)}
+
+
+# ── forum search (filters out torrent-less results) ──────────────────────
+
+def search_forum(query: str, max_check: int = 12) -> list[dict]:
+    """Search the forum and keep only results whose post actually contains
+    torrents. Returns each with its parsed qualities so the UI can offer
+    a direct download choice."""
+    out: list[dict] = []
+    with session_scope() as session:
+        url = st.search_url(session, query)
+        results = _with_domain_retry(session, lambda: forum.search_results(url))
+
+        for r in results[:max_check]:
+            try:
+                soup = fetch_soup(r["href"])
+                torrents = extract_torrents(soup, r["href"])
+            except Exception as e:
+                log.debug(f"Search: skipping {r['href']}: {e}")
+                continue
+            if not torrents:
+                continue
+            parsed = parse_movie_title_year(r["text"])
+            out.append({
+                "title": parsed["title"],
+                "year": parsed["year"],
+                "forum_title": r["text"],
+                "forum_url": r["href"],
+                "torrents": [{k: t[k] for k in
+                              ("name", "torrent_url", "is_magnet", "quality",
+                               "codec", "rip_type", "file_size", "languages")}
+                             for t in torrents],
+            })
+    log.info(f"Search '{query}': {len(out)} results with torrents")
+    return out

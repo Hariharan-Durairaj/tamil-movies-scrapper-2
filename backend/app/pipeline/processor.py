@@ -302,4 +302,43 @@ def catalog_topic(session: Session, topic: dict) -> dict:
 
     try:
         result = MatchEngine(session).match(title, year,
-                                     
+                                            movie.forum_languages, post_text)
+        apply_match(session, movie, result)
+    except Exception as e:
+        log.warning(f"Library: metadata failed for '{title}': {e}")
+
+    # library entries are never auto-sent; normalize status
+    if movie.status in (MovieStatus.MATCHED, MovieStatus.DISCOVERED):
+        movie.status = MovieStatus.LIBRARY
+    return {"movie_id": movie.id, "status": "cataloged"}
+
+
+def download_movie(session: Session, movie: Movie,
+                   torrent_id: int | None = None) -> dict:
+    """Manual 'download anyway' — from review queue, rejected list, library
+    or search results. Bypasses the rating threshold."""
+    torrent = None
+    if torrent_id:
+        torrent = next((t for t in movie.torrents if t.id == torrent_id), None)
+    torrent = torrent or select_torrent(session, movie.torrents)
+    if not torrent:
+        return {"ok": False, "error": "no torrents stored for this movie"}
+    ok = send_movie(session, movie, torrent)
+    return {"ok": ok, "status": movie.status}
+
+
+def apply_review_choice(session: Session, movie: Movie, candidate_idx: int) -> dict:
+    """User picked one of the stored match candidates in the review UI."""
+    cands = movie.match_candidates or []
+    if not (0 <= candidate_idx < len(cands)):
+        return {"ok": False, "error": "bad candidate index"}
+    best = dict(cands[candidate_idx])
+    best.setdefault("_score", best.get("_score", 1.0))
+    enriched = MatchEngine(session)._enrich(best)
+    movie.poster_path = None  # re-fetch poster for the chosen film
+    apply_match(session, movie,
+                {"status": "matched", "best": enriched, "candidates": cands})
+    movie.match_confidence = 1.0  # human-confirmed
+    log.info(f"Review: '{movie.title}' confirmed as "
+             f"'{enriched.get('title')}' ({enriched.get('year')})")
+    return {"ok": True}

@@ -311,4 +311,10 @@ def test_qbittorrent():
     with session_scope() as s:
         client = QBittorrentClient(st.get(s, "qbittorrent_url") or "",
                                    st.get(s, "qbittorrent_username") or "",
-                           
+                                   st.get(s, "qbittorrent_password") or "")
+        return {"ok": client.test_connection()}
+
+
+@router.get("/health")
+def health():
+    return {"ok": True}

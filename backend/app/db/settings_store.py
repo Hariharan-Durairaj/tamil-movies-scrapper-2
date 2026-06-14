@@ -125,4 +125,6 @@ def search_url(session: Session, query: str) -> str:
     return base_url(session) + path
 
 
-def fingerprint
+def fingerprints(session: Session) -> list[str]:
+    raw = get(session, "site_fingerprints") or ""
+    return [f.strip() for f in raw.split(",") if f.strip()]

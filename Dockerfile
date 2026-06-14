@@ -27,4 +27,4 @@ EXPOSE 8585
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s \
     CMD curl -fs "http://localhost:${PORT:-8585}/api/health" || exit 1
 
-ENTRYPOINT ["./entry
+ENTRYPOINT ["./entrypoint.sh"]

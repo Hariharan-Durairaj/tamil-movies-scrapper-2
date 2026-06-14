@@ -79,4 +79,10 @@ class QBittorrentClient:
         if not self._ensure_login():
             return []
         try:
-            params = {"category": category} if ca
+            params = {"category": category} if category else {}
+            r = self.session.get(f"{self.url}/api/v2/torrents/info",
+                                 params=params, timeout=15)
+            return r.json() if r.status_code == 200 else []
+        except Exception as e:
+            log.warning(f"qBittorrent list error: {e}")
+            return []
