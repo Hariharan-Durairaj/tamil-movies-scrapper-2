@@ -12,7 +12,8 @@ from ..db.models import Movie, MovieStatus, TaskState
 from ..db.session import session_scope
 from ..scraper import forum
 from ..scraper.domain import ensure_current_domain
-from ..scraper.http import fetch_soup
+from ..metadata.posters import save_poster
+from ..scraper.http import fetch_json, fetch_soup
 from ..scraper.parse import parse_movie_title_year
 from ..scraper.torrents import extract_torrents
 from . import processor
@@ -129,9 +130,16 @@ def request_full_scan_stop() -> None:
         _state_set(session, "full_scan_stop", "1")
 
 
-def full_library_scan(max_pages_this_run: int | None = None) -> dict:
-    """Walk every forum page (resuming from the checkpoint) and catalog all
-    movies. Never downloads. Politeness delay between posts."""
+def full_library_scan(max_pages_this_run: int | None = None,
+                      start_page: int | None = None,
+                      end_page: int | None = None) -> dict:
+    """Walk forum pages and catalog all movies. Never downloads. Politeness
+    delay between posts.
+
+    Without start_page/end_page it resumes from the saved checkpoint and runs
+    to the last page. With an explicit range it scans start_page..end_page
+    inclusive (the checkpoint is still advanced so the dashboard reflects it)."""
+    explicit_range = start_page is not None
     with session_scope() as session:
         if _state_get(session, "full_scan_running") == "1":
             return {"ok": False, "error": "already running"}
@@ -143,17 +151,25 @@ def full_library_scan(max_pages_this_run: int | None = None) -> dict:
         with session_scope() as session:
             forum_base = st.forum_url(session)
             delay = st.get_float(session, "full_scan_delay_seconds") or 3.0
-            start_page = (st.get_int(session, "full_scan_last_page") or 0) + 1
             total = _with_domain_retry(session,
                                        lambda: forum.total_pages(forum_base))
             _state_set(session, "full_scan_total_pages", str(total))
-            log.info(f"Full scan: pages {start_page}..{total}")
 
-        end_page = total
+            if explicit_range:
+                first_page = max(1, start_page)
+                last_page = end_page if end_page else total
+                last_page = min(last_page, total) if total else last_page
+            else:
+                first_page = (st.get_int(session, "full_scan_last_page") or 0) + 1
+                last_page = total
+            log.info(f"Full scan: pages {first_page}..{last_page}"
+                     + (" (explicit range)" if explicit_range else ""))
+
+        run_start, run_end = first_page, last_page
         if max_pages_this_run:
-            end_page = min(total, start_page + max_pages_this_run - 1)
+            run_end = min(run_end, run_start + max_pages_this_run - 1)
 
-        for page in range(start_page, end_page + 1):
+        for page in range(run_start, run_end + 1):
             with session_scope() as session:
                 if _state_get(session, "full_scan_stop") == "1":
                     log.info("Full scan: stop requested")
@@ -208,6 +224,18 @@ def sync_radarr() -> dict:
         if not radarr_movies:
             return {"ok": False, "error": "Radarr returned no movies (check URL/API key)"}
 
+        # Only sync movies stored under the configured root folder. Radarr can
+        # have several root folders; the user wants just this one.
+        root = (st.get(session, "radarr_root_folder") or "").strip().rstrip("/")
+        skipped_path = 0
+        if root:
+            def _under_root(rm: dict) -> bool:
+                p = (rm.get("rootFolderPath") or rm.get("path") or "").rstrip("/")
+                return p == root or p.startswith(root + "/")
+            filtered = [rm for rm in radarr_movies if _under_root(rm)]
+            skipped_path = len(radarr_movies) - len(filtered)
+            radarr_movies = filtered
+
         from sqlalchemy import func
         for rm in radarr_movies:
             title = rm.get("title") or ""
@@ -240,7 +268,7 @@ def sync_radarr() -> dict:
                     movie.is_tamil_original = (lang == "Tamil")
                 updated += 1
             else:
-                session.add(Movie(
+                movie = Movie(
                     title=title, year=year, source="radarr_sync",
                     status=MovieStatus.IN_RADARR,
                     matched_title=title, tmdb_id=tmdb_id, imdb_id=imdb_id,
@@ -253,18 +281,91 @@ def sync_radarr() -> dict:
                     rejection_reason=("already in Radarr (downloaded)"
                                       if rm.get("hasFile")
                                       else "already in Radarr (monitored)"),
-                ))
+                )
+                session.add(movie)
                 added += 1
+
+            # Posters: Radarr-synced rows had no image. Pull the poster Radarr
+            # already knows about (remoteUrl → TMDB) so the library shows art.
+            if not movie.poster_path:
+                poster_url = _radarr_poster_url(rm)
+                if poster_url:
+                    session.flush()  # need movie.id for the filename
+                    movie.poster_path = save_poster(poster_url, movie.id)
         session.commit()
 
     processor.invalidate_radarr_cache()
-    log.info(f"Radarr sync: {added} imported, {updated} linked",
+    log.info(f"Radarr sync: {added} imported, {updated} linked, "
+             f"{skipped_path} outside root folder",
              radarr_total=len(radarr_movies))
     return {"ok": True, "imported": added, "linked": updated,
+            "skipped_outside_root": skipped_path,
             "radarr_total": len(radarr_movies)}
 
 
-# ── forum search (filters out torrent-less results) ──────────────────────
+def _radarr_poster_url(rm: dict) -> str | None:
+    """Best poster URL from a Radarr movie's images array."""
+    for img in rm.get("images") or []:
+        if img.get("coverType") == "poster":
+            url = img.get("remoteUrl") or img.get("url")
+            if url and url.startswith("http"):
+                return url
+    return None
+
+
+# ── forum search (new JSON API, priority posts first) ────────────────────
+
+def search_forum_api(query: str, page: int = 1) -> dict:
+    """Direct search.php JSON API. Fast: no per-post scraping. Returns results
+    ordered priority-first (moderator releases), with pagination info so the
+    UI can 'load more'. Torrents are fetched lazily per result on demand."""
+    with session_scope() as session:
+        url = st.search_api_url(session, query, page)
+        data = _with_domain_retry(session, lambda: fetch_json(url)) or {}
+        results = []
+        for r in data.get("results", []):
+            tid = r.get("tid")
+            if not tid:
+                continue
+            parsed = parse_movie_title_year(r.get("title") or "")
+            results.append({
+                "tid": tid,
+                "title": parsed["title"],
+                "year": parsed["year"],
+                "forum_title": r.get("title"),
+                "forum_url": st.topic_url(session, tid),
+                "priority": bool(r.get("priority")),
+                "author": r.get("author"),
+            })
+        # priority (moderator) posts first, otherwise keep API order
+        results.sort(key=lambda x: (not x["priority"],))
+        log.info(f"Search API '{query}' p{page}: {len(results)} results")
+        return {
+            "mode": "api",
+            "results": results,
+            "page": data.get("page", page),
+            "page_count": data.get("page_count", 1),
+            "total": data.get("total", len(results)),
+        }
+
+
+def search_post_torrents(forum_url: str) -> list[dict]:
+    """Fetch one post and return its torrents (empty if the post has none).
+    Used by the new search UI to lazily reveal download options."""
+    with session_scope() as session:
+        try:
+            soup = _with_domain_retry(session, lambda: fetch_soup(forum_url))
+            torrents = extract_torrents(soup, forum_url)
+        except Exception as e:
+            log.debug(f"Search torrents fetch failed {forum_url}: {e}")
+            return []
+        return [{k: t[k] for k in
+                 ("name", "torrent_url", "is_magnet", "quality",
+                  "codec", "rip_type", "file_size", "languages")}
+                for t in torrents]
+
+
+# ── forum search (old scraper fallback, filters torrent-less results) ─────
 
 def search_forum(query: str, max_check: int = 12) -> list[dict]:
     """Search the forum and keep only results whose post actually contains

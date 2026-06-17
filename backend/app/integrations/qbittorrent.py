@@ -39,6 +39,33 @@ class QBittorrentClient:
     def test_connection(self) -> bool:
         return self.login()
 
+    @staticmethod
+    def _add_ok(r) -> bool:
+        """Decide whether an /torrents/add call succeeded.
+
+        Old qBittorrent replies with an empty body or 'Ok.'. qBittorrent v5
+        replies with JSON like
+        {"added_torrent_ids":[...],"failure_count":0,"success_count":1}.
+        The old check `"fail" not in text` wrongly matched the *substring*
+        'failure_count' and reported success as failure."""
+        if r.status_code != 200:
+            return False
+        text = (r.text or "").strip()
+        if not text or text.lower() == "ok.":
+            return True
+        try:
+            data = r.json()
+            if isinstance(data, dict) and (
+                    "success_count" in data or "failure_count" in data
+                    or "added_torrent_ids" in data):
+                return (data.get("success_count", 0) > 0
+                        or data.get("pending_count", 0) > 0
+                        or bool(data.get("added_torrent_ids")))
+        except Exception:
+            pass
+        # plain-text response that isn't JSON counts → treat literal 'fail' as error
+        return "fail" not in text.lower()
+
     def add_torrent_url(self, url: str, category: str = "radarr") -> bool:
         """Add by URL — works for both magnet links and .torrent URLs."""
         if not self._ensure_login():
@@ -47,7 +74,7 @@ class QBittorrentClient:
             r = self.session.post(f"{self.url}/api/v2/torrents/add",
                                   data={"urls": url, "category": category},
                                   timeout=30)
-            ok = r.status_code == 200 and "fail" not in r.text.lower()
+            ok = self._add_ok(r)
             if ok:
                 log.info("qBittorrent: torrent added (url)", category=category)
             else:
@@ -65,7 +92,7 @@ class QBittorrentClient:
                 r = self.session.post(f"{self.url}/api/v2/torrents/add",
                                       files={"torrents": f},
                                       data={"category": category}, timeout=30)
-            ok = r.status_code == 200 and "fail" not in r.text.lower()
+            ok = self._add_ok(r)
             if ok:
                 log.info("qBittorrent: torrent added (file)", path=path)
             else:

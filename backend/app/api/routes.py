@@ -154,6 +154,24 @@ def review_movie(movie_id: int, body: ReviewBody):
         return processor.apply_review_choice(s, m, body.candidate_idx)
 
 
+class ImdbBody(BaseModel):
+    imdb_id: str
+
+
+@router.post("/movies/{movie_id}/set-imdb")
+def set_imdb(movie_id: int, body: ImdbBody):
+    """Manually pin a movie to an IMDb id, then re-enrich (tmdb id, rating,
+    poster, language) and mark it as a human-confirmed match."""
+    imdb_id = body.imdb_id.strip()
+    if not imdb_id.startswith("tt"):
+        raise HTTPException(400, "imdb_id must look like tt1234567")
+    with session_scope() as s:
+        m = s.get(Movie, movie_id)
+        if not m:
+            raise HTTPException(404)
+        return processor.set_imdb_id(s, m, imdb_id)
+
+
 @router.post("/movies/{movie_id}/rematch")
 def rematch_movie(movie_id: int):
     """Re-run metadata matching (e.g. after fixing API keys)."""
@@ -182,10 +200,15 @@ def trigger_scan():
 
 
 @router.post("/library/full-scan/start")
-def full_scan_start(max_pages: int | None = None):
+def full_scan_start(max_pages: int | None = None,
+                    start_page: int | None = None,
+                    end_page: int | None = None):
+    """If start_page/end_page are given, scan that inclusive range (ignoring
+    the saved checkpoint). Otherwise resume from the checkpoint."""
     started = scheduler.run_in_background(
         scanner.full_library_scan, "full_scan",
-        max_pages_this_run=max_pages)
+        max_pages_this_run=max_pages,
+        start_page=start_page, end_page=end_page)
     return {"ok": started, "note": None if started else "already running"}
 
 
@@ -210,10 +233,22 @@ def full_scan_reset():
 # ── search ───────────────────────────────────────────────────────────────
 
 @router.get("/search")
-def search(q: str):
+def search(q: str, page: int = 1, old: bool = False):
+    """Default: fast JSON search.php API (priority posts first, paginated).
+    old=true falls back to the legacy scraper that pre-filters torrent-less
+    results."""
     if not q.strip():
         raise HTTPException(400, "empty query")
-    return {"results": scanner.search_forum(q.strip())}
+    if old:
+        return {"mode": "old", "results": scanner.search_forum(q.strip()),
+                "page": 1, "page_count": 1}
+    return scanner.search_forum_api(q.strip(), page)
+
+
+@router.get("/search/torrents")
+def search_torrents(forum_url: str):
+    """Lazy torrent fetch for one result in the new search UI."""
+    return {"torrents": scanner.search_post_torrents(forum_url)}
 
 
 class SearchDownloadBody(BaseModel):
@@ -285,6 +320,13 @@ def domain_check(force: bool = False):
     with session_scope() as s:
         domain = ensure_current_domain(s, force_search=force)
         return {"ok": domain is not None, "domain": domain}
+
+
+@router.post("/system/reset-all")
+def reset_all():
+    """Delete all data (movies, torrents, logs, metadata cache, scan state,
+    posters) but keep settings."""
+    return processor.reset_all_data()
 
 
 @router.post("/system/radarr-sync")

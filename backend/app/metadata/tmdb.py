@@ -36,6 +36,16 @@ class TMDBClient:
     def external_ids(self, tmdb_id: int) -> dict:
         return self._get(f"/movie/{tmdb_id}/external_ids") or {}
 
+    def find_by_imdb(self, imdb_id: str) -> dict | None:
+        """Resolve an IMDb id to a TMDB movie candidate via /find."""
+        data = self._get(f"/find/{imdb_id}", external_source="imdb_id")
+        results = (data or {}).get("movie_results") or []
+        if not results:
+            return None
+        cand = self._to_candidate(results[0])
+        cand["imdb_id"] = imdb_id
+        return cand
+
     def details(self, tmdb_id: int) -> dict | None:
         return self._get(f"/movie/{tmdb_id}")
 

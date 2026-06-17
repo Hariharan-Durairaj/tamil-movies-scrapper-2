@@ -9,6 +9,9 @@ DEFAULTS: dict[str, str] = {
     "current_domain": "www.1tamilmv.cards",
     "forum_path": "/index.php?/forums/forum/11-web-hd-itunes-hd-bluray/",
     "search_path": "/index.php?/search/&q={query}&quick=1",
+    # New JSON search API (priority posts first). {query} and {page} substituted.
+    "search_api_path": "/search/api/search.php?q={query}&priority=1&sort=date_desc&per_page=25&page={page}",
+    "topic_path": "/index.php?/forums/topic/{tid}-x/",
 
     # Fingerprints used to verify the site after a domain change (ANY one match
     # is enough). Comma-separated, editable without redeploying.
@@ -19,6 +22,9 @@ DEFAULTS: dict[str, str] = {
     "preferred_codec": "x264",
     "rating_threshold": "6.5",
     "max_size_gb": "0",                      # 0 = no limit
+    # When false, non-Tamil-original films (Indian movies with a Tamil dub) are
+    # rejected in the auto-scan instead of being sent to Radarr.
+    "allow_tamil_dubs": "false",
 
     # Metadata matching
     "match_auto_accept": "0.75",             # >= : auto accept
@@ -122,6 +128,19 @@ def forum_url(session: Session) -> str:
 def search_url(session: Session, query: str) -> str:
     from urllib.parse import quote
     path = (get(session, "search_path") or "").replace("{query}", quote(query))
+    return base_url(session) + path
+
+
+def search_api_url(session: Session, query: str, page: int = 1) -> str:
+    from urllib.parse import quote_plus
+    path = ((get(session, "search_api_path") or "")
+            .replace("{query}", quote_plus(query))
+            .replace("{page}", str(page)))
+    return base_url(session) + path
+
+
+def topic_url(session: Session, tid: int) -> str:
+    path = (get(session, "topic_path") or "").replace("{tid}", str(tid))
     return base_url(session) + path
 
 

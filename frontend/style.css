@@ -14,6 +14,8 @@ body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans
 .layout { display: flex; min-height: 100vh; }
 .sidebar { width: 200px; background: var(--bg2); padding: 20px 0; position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; }
 .sidebar h1 { font-size: 17px; padding: 0 20px 16px; }
+.sidebar .logo { display: block; padding: 0 16px 14px; }
+.sidebar .logo svg { width: 100%; height: auto; }
 .nav-link { display: block; padding: 10px 20px; color: var(--muted); text-decoration: none; border-left: 3px solid transparent; }
 .nav-link:hover { color: var(--text); background: var(--bg3); }
 .nav-link.active { color: var(--text); border-left-color: var(--accent); background: var(--bg3); }

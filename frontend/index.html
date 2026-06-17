@@ -3,13 +3,22 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Tamil Movie Automator</title>
+<title>TamilDL — Movies Downloader</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div class="layout">
   <nav class="sidebar">
-    <h1>🎬 Automator</h1>
+    <a href="#dashboard" class="logo" aria-label="TamilDL Movies Downloader">
+      <svg width="180" height="90" viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="80" cy="100" r="70" fill="#1AABCC"/>
+        <polygon points="56,72 108,100 56,128" fill="white"/>
+        <rect x="91" y="118" width="10" height="22" fill="white" rx="2"/>
+        <polygon points="78,134 101,158 124,134" fill="white"/>
+        <text x="165" y="95" font-family="system-ui, sans-serif" font-size="38" font-weight="600" fill="#1AABCC">Tamil<tspan font-weight="400" fill="#888">DL</tspan></text>
+        <text x="167" y="118" font-family="system-ui, sans-serif" font-size="11" font-weight="400" fill="#999" letter-spacing="3">MOVIES DOWNLOADER</text>
+      </svg>
+    </a>
     <a href="#dashboard" class="nav-link" data-page="dashboard">Dashboard</a>
     <a href="#library" class="nav-link" data-page="library">Library</a>
     <a href="#search" class="nav-link" data-page="search">Search</a>
@@ -38,6 +47,12 @@
       <div class="panel">
         <h3>Forum library full scan</h3>
         <div id="fullscan-status" class="muted"></div>
+        <div class="row gap wrap" style="margin-top:10px">
+          <label class="muted small">Page range (optional):</label>
+          <input id="fullscan-start" class="input" type="number" min="1" placeholder="from" style="width:90px">
+          <input id="fullscan-end" class="input" type="number" min="1" placeholder="to" style="width:90px">
+          <span class="muted small">leave blank to resume from checkpoint</span>
+        </div>
         <div class="row gap" style="margin-top:10px">
           <button id="btn-fullscan-start" class="btn primary">Start / Resume</button>
           <button id="btn-fullscan-stop" class="btn warn">Stop</button>
@@ -89,14 +104,25 @@
         <input id="search-input" class="input grow" placeholder="Movie name…">
         <button id="search-btn" class="btn primary">Search</button>
       </div>
-      <p class="muted small">Only results that actually contain torrents are shown.</p>
+      <label class="row gap small muted" style="margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="search-old"> Use old search (slower fallback — pre-checks torrents)
+      </label>
+      <p class="muted small" id="search-hint">Fast search API — moderator (priority) releases shown first.</p>
       <div id="search-results"></div>
+      <div class="row center"><button id="search-more" class="btn hidden">Load more</button></div>
     </section>
 
     <!-- Review -->
     <section id="page-review" class="page hidden">
       <h2>Review queue</h2>
       <p class="muted">Movies with ambiguous metadata matches. Pick the correct film, then download if wanted.</p>
+      <div class="row gap wrap filters">
+        <select id="review-tamil" class="input">
+          <option value="">All languages</option>
+          <option value="true">Tamil originals only</option>
+          <option value="false">Tamil dubs / others</option>
+        </select>
+      </div>
       <div id="review-list"></div>
     </section>
 
@@ -110,6 +136,11 @@
         <button id="test-qbit" class="btn">Test qBittorrent</button>
       </div>
       <div id="settings-msg" class="muted" style="margin-top:8px"></div>
+      <div class="panel" style="margin-top:20px;border-color:var(--err)">
+        <h3>Danger zone</h3>
+        <p class="muted small">Delete all movies, torrents, logs, metadata cache and scan progress. Your settings are kept.</p>
+        <button id="btn-reset-all" class="btn danger" style="margin-top:8px">Reset all data</button>
+      </div>
     </section>
 
     <!-- Logs -->

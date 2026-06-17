@@ -145,8 +145,15 @@ $("#btn-domain-force").onclick = async () => {
   catch (e) { toast(e.message, true); }
 };
 $("#btn-fullscan-start").onclick = async () => {
-  try { const r = await api("/library/full-scan/start", { method: "POST" });
-    toast(r.ok ? "Full scan started" : r.note); pollFullScan(); }
+  const start = $("#fullscan-start").value.trim();
+  const end = $("#fullscan-end").value.trim();
+  const qs = new URLSearchParams();
+  if (start) qs.set("start_page", start);
+  if (end) qs.set("end_page", end);
+  const path = "/library/full-scan/start" + (qs.toString() ? "?" + qs : "");
+  try { const r = await api(path, { method: "POST" });
+    toast(r.ok ? (start ? `Scanning pages ${start}–${end || "end"}` : "Full scan started") : r.note);
+    pollFullScan(); }
   catch (e) { toast(e.message, true); }
 };
 $("#btn-fullscan-stop").onclick = async () => {
@@ -209,6 +216,11 @@ window.openMovie = async (id) => {
           <button class="btn sm" onclick="rematch(${m.id})">Re-match metadata</button>
           <button class="btn danger sm" onclick="delMovie(${m.id})">Delete</button>
         </div>
+        <div class="row gap" style="margin-top:10px">
+          <input id="imdb-edit" class="input sm" placeholder="ttXXXXXXX" value="${esc(m.imdb_id || "")}" style="max-width:160px">
+          <button class="btn sm" onclick="setImdb(${m.id})">Set IMDb ID</button>
+          <span class="muted small">fixes wrong metadata / language</span>
+        </div>
       </div></div>
       ${cands ? `<h3 style="margin-top:18px">Match candidates</h3>${cands}` : ""}
       ${torrents ? `<h3 style="margin-top:18px">Torrents</h3>${torrents}` : "<p class='muted' style='margin-top:14px'>No torrents stored — Download will fetch the post first.</p>"}`;
@@ -231,6 +243,16 @@ window.rematch = async (movieId) => {
   try { await api(`/movies/${movieId}/rematch`, { method: "POST" }); openMovie(movieId); }
   catch (e) { toast(e.message, true); }
 };
+window.setImdb = async (movieId) => {
+  const imdb_id = ($("#imdb-edit").value || "").trim();
+  if (!imdb_id) return toast("Enter an IMDb id (e.g. tt1234567)", true);
+  toast("Updating metadata from IMDb…");
+  try {
+    const r = await api(`/movies/${movieId}/set-imdb`, { method: "POST", json: { imdb_id } });
+    toast(`Updated ✓ ${r.matched_title || ""} (${r.original_language || "?"})`);
+    openMovie(r.id || movieId);
+  } catch (e) { toast(e.message, true); }
+};
 window.delMovie = async (movieId) => {
   if (!confirm("Delete this movie from the database?")) return;
   await api("/movies/" + movieId, { method: "DELETE" });
@@ -246,29 +268,84 @@ window.pickCandidate = async (movieId, idx) => {
 };
 
 /* ── search ─────────────────────────────────────────────────────────── */
-async function doSearch() {
-  const q = $("#search-input").value.trim();
-  if (!q) return;
-  $("#search-results").innerHTML = `<p class="muted"><span class="spinner"></span> Searching forum and checking torrents…</p>`;
+let searchPage = 1, searchQuery = "";
+
+function searchResultBlock(res) {
+  // New-API result: torrents are loaded lazily. Old-mode results already
+  // carry torrents (rendered immediately).
+  const pill = res.priority ? `<span class="tamil-pill" style="position:static;margin-left:8px">PRIORITY</span>` : "";
+  if (res.torrents) {
+    return `<div class="result-block">
+      <b>${esc(res.forum_title)}</b>${pill}
+      ${res.torrents.map((t) => torrentRow(t,
+        `<button class="btn sm primary" onclick='searchDownload(${JSON.stringify(res.forum_url)}, ${JSON.stringify(res.forum_title)}, ${JSON.stringify(t.torrent_url)})'>Download</button>`)).join("")}
+    </div>`;
+  }
+  const fu = JSON.stringify(res.forum_url);
+  return `<div class="result-block" data-forum=${fu}>
+    <div class="row gap wrap">
+      <b>${esc(res.forum_title)}</b>${pill}
+      <span class="grow"></span>
+      <a class="btn sm" href="${esc(res.forum_url)}" target="_blank">Open post</a>
+      <button class="btn sm primary" onclick='loadTorrents(this, ${fu}, ${JSON.stringify(res.forum_title)})'>Show torrents</button>
+    </div>
+    <div class="torrent-slot"></div>
+  </div>`;
+}
+
+window.loadTorrents = async (btn, forumUrl, forumTitle) => {
+  const slot = btn.closest(".result-block").querySelector(".torrent-slot");
+  slot.innerHTML = `<p class="muted small"><span class="spinner"></span> Fetching torrents…</p>`;
+  btn.disabled = true;
   try {
-    const r = await api("/search?q=" + encodeURIComponent(q));
-    if (!r.results.length) {
-      $("#search-results").innerHTML = `<p class="muted">No results with torrents found.</p>`;
+    const r = await api("/search/torrents?forum_url=" + encodeURIComponent(forumUrl));
+    if (!r.torrents.length) {
+      slot.innerHTML = `<p class="muted small">No torrent files in this post (external/streaming link only).</p>`;
       return;
     }
-    $("#search-results").innerHTML = r.results.map((res) => `
-      <div class="result-block">
-        <b>${esc(res.forum_title)}</b>
-        ${res.torrents.map((t) => torrentRow(t,
-          `<button class="btn sm primary" onclick='searchDownload(${JSON.stringify(res.forum_url)}, ${JSON.stringify(res.forum_title)}, ${JSON.stringify(t.torrent_url)})'>Download</button>`)).join("")}
-      </div>`).join("");
+    slot.innerHTML = r.torrents.map((t) => torrentRow(t,
+      `<button class="btn sm primary" onclick='searchDownload(${JSON.stringify(forumUrl)}, ${JSON.stringify(forumTitle)}, ${JSON.stringify(t.torrent_url)})'>Download</button>`)).join("");
   } catch (e) {
-    $("#search-results").innerHTML = "";
+    slot.innerHTML = "";
+    toast(e.message, true);
+  } finally { btn.disabled = false; }
+};
+
+async function doSearch(append) {
+  const old = $("#search-old").checked;
+  if (!append) {
+    searchQuery = $("#search-input").value.trim();
+    searchPage = 1;
+    if (!searchQuery) return;
+    $("#search-results").innerHTML = `<p class="muted"><span class="spinner"></span> Searching…</p>`;
+    $("#search-more").classList.add("hidden");
+  }
+  const params = new URLSearchParams({ q: searchQuery, page: searchPage });
+  if (old) params.set("old", "true");
+  try {
+    const r = await api("/search?" + params);
+    const html = r.results.map(searchResultBlock).join("");
+    if (!append) {
+      $("#search-results").innerHTML = html ||
+        `<p class="muted">No results found.</p>`;
+    } else {
+      $("#search-results").insertAdjacentHTML("beforeend", html);
+    }
+    const more = !old && r.page_count && r.page < r.page_count;
+    $("#search-more").classList.toggle("hidden", !more);
+  } catch (e) {
+    if (!append) $("#search-results").innerHTML = "";
     toast("Search failed: " + e.message, true);
   }
 }
-$("#search-btn").onclick = doSearch;
-$("#search-input").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
+$("#search-btn").onclick = () => doSearch(false);
+$("#search-input").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(false); });
+$("#search-more").onclick = () => { searchPage++; doSearch(true); };
+$("#search-old").addEventListener("change", () => {
+  $("#search-hint").textContent = $("#search-old").checked
+    ? "Old search — scrapes each result and only shows posts that contain torrents."
+    : "Fast search API — moderator (priority) releases shown first.";
+});
 
 window.searchDownload = async (forumUrl, forumTitle, torrentUrl) => {
   toast("Adding…");
@@ -282,7 +359,9 @@ window.searchDownload = async (forumUrl, forumTitle, torrentUrl) => {
 /* ── review queue ───────────────────────────────────────────────────── */
 async function loadReview() {
   try {
-    const r = await api("/movies?status=needs_review&per_page=50");
+    const tamil = $("#review-tamil").value;
+    const r = await api("/movies?status=needs_review&per_page=50"
+      + (tamil ? "&tamil=" + tamil : ""));
     if (!r.movies.length) {
       $("#review-list").innerHTML = `<p class="muted">Nothing to review 🎉</p>`;
       return;
@@ -303,17 +382,19 @@ async function loadReview() {
   } catch (e) { toast(e.message, true); }
 }
 
+$("#review-tamil").addEventListener("change", loadReview);
+
 /* ── settings ───────────────────────────────────────────────────────── */
 const SETTINGS_GROUPS = {
-  "Forum": ["website_base", "current_domain", "forum_path", "search_path", "site_fingerprints"],
-  "Download preferences": ["preferred_quality", "preferred_codec", "rating_threshold", "max_size_gb"],
+  "Forum": ["website_base", "current_domain", "forum_path", "search_path", "search_api_path", "topic_path", "site_fingerprints"],
+  "Download preferences": ["preferred_quality", "preferred_codec", "rating_threshold", "max_size_gb", "allow_tamil_dubs"],
   "Metadata": ["tmdb_api_key", "omdb_api_key", "match_auto_accept", "match_review_floor"],
   "Radarr": ["radarr_url", "radarr_api_key", "radarr_quality_profile_id", "radarr_root_folder", "radarr_sync_enabled", "radarr_sync_time"],
   "qBittorrent": ["qbittorrent_url", "qbittorrent_username", "qbittorrent_password", "qbittorrent_category"],
   "Daily scan": ["daily_scan_enabled", "daily_scan_time", "scan_pages", "scan_max_links", "duplicate_stop_count", "auto_download"],
   "Domain & housekeeping": ["domain_check_enabled", "domain_check_time", "full_scan_delay_seconds", "log_retention_days"],
 };
-const BOOL_KEYS = new Set(["daily_scan_enabled", "auto_download", "domain_check_enabled", "radarr_sync_enabled"]);
+const BOOL_KEYS = new Set(["daily_scan_enabled", "auto_download", "domain_check_enabled", "radarr_sync_enabled", "allow_tamil_dubs"]);
 const SECRET_KEYS = new Set(["tmdb_api_key", "omdb_api_key", "radarr_api_key", "qbittorrent_password"]);
 
 async function loadSettings() {
@@ -349,6 +430,14 @@ $("#test-qbit").onclick = async () => {
   try { const r = await api("/system/test-qbittorrent", { method: "POST" });
     toast(r.ok ? "qBittorrent OK" : "qBittorrent connection failed", !r.ok); }
   catch (e) { toast(e.message, true); }
+};
+$("#btn-reset-all").onclick = async () => {
+  if (!confirm("Delete ALL data (movies, torrents, logs, cache, scan progress)?\nYour settings are kept. This cannot be undone.")) return;
+  if (!confirm("Are you absolutely sure? This wipes the whole library.")) return;
+  try {
+    const r = await api("/system/reset-all", { method: "POST" });
+    toast(r.ok ? `Reset done — removed ${r.deleted.movies || 0} movies` : "Reset failed", !r.ok);
+  } catch (e) { toast(e.message, true); }
 };
 
 /* ── logs ───────────────────────────────────────────────────────────── */

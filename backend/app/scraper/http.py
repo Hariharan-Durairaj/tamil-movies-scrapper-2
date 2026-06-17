@@ -45,6 +45,10 @@ def fetch_soup(url: str, timeout: int = 20) -> BeautifulSoup:
     return BeautifulSoup(fetch(url, timeout).content, "html.parser")
 
 
+def fetch_json(url: str, timeout: int = 20):
+    return fetch(url, timeout).json()
+
+
 def download_file(url: str, dest_path: str, timeout: int = 60) -> str:
     resp = _session.get(url, timeout=timeout)
     resp.raise_for_status()

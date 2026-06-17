@@ -25,7 +25,8 @@ from ..integrations.radarr import RadarrClient
 from ..metadata.engine import MatchEngine
 from ..metadata.posters import save_poster
 from ..scraper.http import download_file, fetch_soup
-from ..scraper.parse import detect_languages, file_size_gb, parse_movie_title_year
+from ..scraper.parse import (detect_languages, file_size_gb,
+                             normalize_title, parse_movie_title_year)
 from ..scraper.torrents import extract_torrents
 
 QUALITY_RANK = {"1080p": 0, "FHD": 0, "720p": 1, "HD": 1,
@@ -68,6 +69,17 @@ def get_or_create_movie(session: Session, title: str, year: int | None,
     movie = q.one_or_none()
     if movie:
         return movie, False
+
+    # Fuzzy fallback: same year, title normalizes identically (e.g. forum
+    # "KD: The Devil" vs Radarr "KD – The Devil"). Avoids punctuation dupes.
+    norm = normalize_title(title)
+    if norm:
+        yq = session.query(Movie)
+        yq = yq.filter(Movie.year == year) if year is not None else yq.filter(Movie.year.is_(None))
+        for cand in yq.all():
+            if normalize_title(cand.title) == norm or (
+                    cand.matched_title and normalize_title(cand.matched_title) == norm):
+                return cand, False
     movie = Movie(title=title, year=year, forum_url=forum_url,
                   forum_title=forum_title, source=source,
                   forum_languages=detect_languages(forum_title),
@@ -91,11 +103,16 @@ def store_torrents(session: Session, movie: Movie, torrents: list[dict]) -> None
     for t in torrents:
         if t["torrent_url"] in existing:
             continue
-        session.add(MovieTorrent(
-            movie_id=movie.id, name=t["name"], torrent_url=t["torrent_url"],
+        # Append to the relationship (not just session.add with movie_id) so the
+        # in-memory movie.torrents collection is up to date. Otherwise a freshly
+        # created movie keeps a stale empty collection and select_torrent() later
+        # in the same transaction sees no torrents → false "no_torrents_in_post".
+        movie.torrents.append(MovieTorrent(
+            name=t["name"], torrent_url=t["torrent_url"],
             is_magnet=t["is_magnet"], source_format=t["source_format"],
             quality=t["quality"], codec=t["codec"], rip_type=t["rip_type"],
             file_size=t["file_size"], languages=t["languages"]))
+        existing.add(t["torrent_url"])
     session.flush()
 
 
@@ -122,6 +139,68 @@ def apply_match(session: Session, movie: Movie, result: dict) -> None:
 
     if best.get("poster_url") and not movie.poster_path:
         movie.poster_path = save_poster(best["poster_url"], movie.id)
+
+
+def merge_external_duplicates(session: Session, movie: Movie) -> Movie:
+    """Collapse rows that point at the same film (same tmdb_id or imdb_id).
+
+    Radarr-sync rows (Radarr's title) and auto-scan rows (forum-parsed title)
+    used to coexist because their titles differ. Now that the movie has an
+    external id we can merge them. The canonical row is the one that has forum
+    data (so we keep the post/torrents); the other's useful fields are folded
+    in and it is deleted. Returns the surviving row."""
+    if not (movie.tmdb_id or movie.imdb_id):
+        return movie
+
+    conds = []
+    if movie.tmdb_id:
+        conds.append(Movie.tmdb_id == movie.tmdb_id)
+    if movie.imdb_id:
+        conds.append(func.lower(Movie.imdb_id) == movie.imdb_id.lower())
+    from sqlalchemy import or_ as _or
+    dupes = (session.query(Movie)
+             .filter(_or(*conds), Movie.id != movie.id).all())
+    if not dupes:
+        return movie
+
+    canonical = movie
+    for other in dupes:
+        # Prefer the row that has the forum post as canonical.
+        keep, drop = (canonical, other)
+        if other.forum_url and not canonical.forum_url:
+            keep, drop = other, canonical
+
+        # Fold useful fields from drop into keep where missing.
+        for attr in ("forum_url", "forum_title", "forum_languages",
+                     "imdb_id", "tmdb_id", "rating", "rating_source",
+                     "matched_title", "original_language", "poster_path",
+                     "match_confidence", "match_candidates"):
+            if getattr(keep, attr) in (None, "", []) and getattr(drop, attr) not in (None, "", []):
+                setattr(keep, attr, getattr(drop, attr))
+        if keep.is_tamil_original is None and drop.is_tamil_original is not None:
+            keep.is_tamil_original = drop.is_tamil_original
+        keep.added_to_radarr = keep.added_to_radarr or drop.added_to_radarr
+        keep.added_to_qbittorrent = keep.added_to_qbittorrent or drop.added_to_qbittorrent
+        # A real delivery / radarr status wins over a bare "matched".
+        rank = {MovieStatus.SENT: 5, MovieStatus.IN_RADARR: 4,
+                MovieStatus.QUALIFIED: 3, MovieStatus.MATCHED: 2}
+        if rank.get(drop.status, 0) > rank.get(keep.status, 0):
+            keep.status = drop.status
+            keep.rejection_reason = drop.rejection_reason
+
+        # Move torrents that keep doesn't already have.
+        have = {t.torrent_url for t in keep.torrents}
+        for t in list(drop.torrents):
+            if t.torrent_url not in have:
+                t.movie_id = keep.id
+                have.add(t.torrent_url)
+        session.flush()
+        session.delete(drop)
+        session.flush()
+        canonical = keep
+        log.info(f"Merged duplicate '{drop.title}' into '{keep.title}' "
+                 f"(tmdb={keep.tmdb_id}, imdb={keep.imdb_id})")
+    return canonical
 
 
 # ── torrent selection ────────────────────────────────────────────────────
@@ -243,7 +322,18 @@ def process_topic(session: Session, topic: dict, source: str = "auto_scan",
     result = engine.match(title, year, movie.forum_languages, post_text)
     apply_match(session, movie, result)
 
+    # Collapse any pre-existing row for the same film (e.g. a Radarr-sync row).
+    movie = merge_external_duplicates(session, movie)
+
     if movie.status in (MovieStatus.NEEDS_REVIEW, MovieStatus.UNMATCHED):
+        return {"movie_id": movie.id, "title": title, "status": movie.status}
+
+    # Tamil-dub gate: when dubs are disabled, a non-Tamil-original (an Indian
+    # film with a Tamil dub) must not be sent to Radarr.
+    if not st.get_bool(session, "allow_tamil_dubs") and movie.is_tamil_original is False:
+        movie.status = MovieStatus.REJECTED
+        movie.rejection_reason = "Tamil dub (non-Tamil original) — dubs disabled"
+        log.info(f"Rejected '{title}': {movie.rejection_reason}")
         return {"movie_id": movie.id, "title": title, "status": movie.status}
 
     # Duplicate guard: Radarr already has this movie → never download twice
@@ -325,6 +415,71 @@ def download_movie(session: Session, movie: Movie,
         return {"ok": False, "error": "no torrents stored for this movie"}
     ok = send_movie(session, movie, torrent)
     return {"ok": ok, "status": movie.status}
+
+
+def set_imdb_id(session: Session, movie: Movie, imdb_id: str) -> dict:
+    """Pin a movie to an IMDb id (manual library edit), then enrich it:
+    resolve TMDB id via /find, pull rating/poster/language, mark confirmed."""
+    engine = MatchEngine(session)
+    cand = {"source": "manual", "imdb_id": imdb_id, "tmdb_id": None,
+            "title": movie.matched_title or movie.title, "year": movie.year}
+    if engine.tmdb:
+        found = engine.tmdb.find_by_imdb(imdb_id)
+        if found:
+            cand.update({k: v for k, v in found.items() if v is not None})
+    cand["imdb_id"] = imdb_id
+    cand["_score"] = 1.0
+    enriched = engine._enrich(cand)
+    movie.poster_path = None  # force fresh poster for the corrected film
+    apply_match(session, movie,
+                {"status": "matched", "best": enriched,
+                 "candidates": movie.match_candidates or []})
+    movie.match_confidence = 1.0  # human-confirmed
+    movie = merge_external_duplicates(session, movie)
+    log.info(f"IMDb id set for movie {movie.id}: {imdb_id} "
+             f"→ {enriched.get('title')} ({enriched.get('original_language')})")
+    return movie_summary(movie)
+
+
+def movie_summary(movie: Movie) -> dict:
+    return {"ok": True, "id": movie.id, "imdb_id": movie.imdb_id,
+            "tmdb_id": movie.tmdb_id, "rating": movie.rating,
+            "matched_title": movie.matched_title,
+            "original_language": movie.original_language,
+            "is_tamil_original": movie.is_tamil_original,
+            "status": movie.status,
+            "poster": f"/posters/{movie.poster_path}" if movie.poster_path else None}
+
+
+def reset_all_data() -> dict:
+    """Delete every data row but keep the settings table. Also wipes cached
+    poster/torrent files on disk."""
+    from ..db.models import (DomainHistory, LogEntry, MetadataCache,
+                             TaskState)
+    counts = {}
+    with session_scope() as session:
+        for model, name in ((MovieTorrent, "torrents"), (Movie, "movies"),
+                            (LogEntry, "logs"), (MetadataCache, "metadata_cache"),
+                            (TaskState, "task_state"), (DomainHistory, "domain_history")):
+            counts[name] = session.query(model).delete()
+        # full-scan checkpoint lives in the settings table — reset it too
+        st.set_value(session, "full_scan_last_page", "0")
+        session.commit()
+
+    # wipe cached files
+    removed_files = 0
+    for d in (env.posters_dir, env.torrents_dir):
+        try:
+            for f in d.glob("*"):
+                if f.is_file():
+                    f.unlink()
+                    removed_files += 1
+        except Exception as e:
+            log.warning(f"reset_all: could not clean {d}: {e}")
+
+    invalidate_radarr_cache()
+    log.info(f"Reset all data: {counts}, {removed_files} files removed")
+    return {"ok": True, "deleted": counts, "files_removed": removed_files}
 
 
 def apply_review_choice(session: Session, movie: Movie, candidate_idx: int) -> dict:
