@@ -47,8 +47,12 @@ class QBittorrentClient:
         replies with JSON like
         {"added_torrent_ids":[...],"failure_count":0,"success_count":1}.
         The old check `"fail" not in text` wrongly matched the *substring*
-        'failure_count' and reported success as failure."""
-        if r.status_code != 200:
+        'failure_count' and reported success as failure.
+
+        qBittorrent v5 also answers a URL add with HTTP 202 Accepted (the
+        torrent is queued for async fetching) rather than 200 — accept it,
+        otherwise a perfectly good add is reported as qbittorrent_failed."""
+        if r.status_code not in (200, 202):
             return False
         text = (r.text or "").strip()
         if not text or text.lower() == "ok.":

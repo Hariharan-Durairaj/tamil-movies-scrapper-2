@@ -1,7 +1,9 @@
 """Torrent extraction from a forum post page.
 
 Three formats exist on the forum (see docs/FORUM_HTML_FORMATS.md of v1);
-the chain is: data-fileext → magnet → ipsAttachLink, first hit wins.
+the chain is: magnet → data-fileext → ipsAttachLink, first hit wins.
+Magnets are preferred because they go straight to qBittorrent by URL and
+avoid the signed attachment.php download (no host/key/referer to break).
 All functions take a BeautifulSoup so they're testable on saved HTML.
 """
 from __future__ import annotations
@@ -107,8 +109,8 @@ def parse_ipsattachlink(soup: BeautifulSoup, base_url: str) -> list[dict]:
 
 def extract_torrents(soup: BeautifulSoup, base_url: str) -> list[dict]:
     """Run the fallback chain on an already-fetched post page."""
-    for fn, label in ((parse_fileext, "fileext"),
-                      (parse_magnets, "magnet"),
+    for fn, label in ((parse_magnets, "magnet"),
+                      (parse_fileext, "fileext"),
                       (parse_ipsattachlink, "ipsAttachLink")):
         torrents = fn(soup, base_url)
         if torrents:

@@ -18,6 +18,17 @@ router = APIRouter(prefix="/api")
 
 # ── serialization ────────────────────────────────────────────────────────
 
+def poster_url(m: Movie) -> str | None:
+    """Local poster URL with a cache-busting version. The on-disk filename is
+    stable ('<id>.webp'), so when a match is corrected the file is overwritten
+    but the URL would stay the same and the browser would keep showing the old
+    cached image. Appending ?v=<updated_at> changes the URL on every edit."""
+    if not m.poster_path:
+        return None
+    ver = int(m.updated_at.timestamp()) if m.updated_at else 0
+    return f"/posters/{m.poster_path}?v={ver}"
+
+
 def movie_dict(m: Movie, with_torrents: bool = False) -> dict:
     d = {
         "id": m.id, "title": m.title, "year": m.year,
@@ -30,7 +41,7 @@ def movie_dict(m: Movie, with_torrents: bool = False) -> dict:
         "imdb_id": m.imdb_id, "tmdb_id": m.tmdb_id,
         "rating": m.rating, "rating_source": m.rating_source,
         "match_confidence": m.match_confidence,
-        "poster": f"/posters/{m.poster_path}" if m.poster_path else None,
+        "poster": poster_url(m),
         "forum_languages": m.forum_languages,
         "downloaded_quality": m.downloaded_quality,
         "added_to_radarr": m.added_to_radarr,

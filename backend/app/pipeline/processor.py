@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -114,6 +115,43 @@ def store_torrents(session: Session, movie: Movie, torrents: list[dict]) -> None
             file_size=t["file_size"], languages=t["languages"]))
         existing.add(t["torrent_url"])
     session.flush()
+
+
+def refresh_torrents(session: Session, movie: Movie) -> bool:
+    """Re-fetch the forum post and refresh stored torrent links.
+
+    Forum attachment URLs carry a per-session key/token that expires, so a
+    torrent stored days ago can 400 on download. This re-scrapes the post and,
+    for each freshly-found torrent, updates the matching stored row's URL in
+    place (matched by release name) — clearing any cached .torrent file so it
+    is re-downloaded. New torrents are appended. Returns True if anything was
+    fetched."""
+    if not movie.forum_url:
+        return False
+    try:
+        torrents, _ = fetch_post(movie)
+    except Exception as e:
+        log.warning(f"refresh_torrents failed for '{movie.title}': {e}")
+        return False
+    if not torrents:
+        return False
+    by_name = {t.name: t for t in movie.torrents}
+    fresh_urls = set()
+    for t in torrents:
+        fresh_urls.add(t["torrent_url"])
+        row = by_name.get(t["name"])
+        if row is None:
+            continue  # genuinely new variant — appended by store_torrents below
+        if row.torrent_url != t["torrent_url"]:
+            row.torrent_url = t["torrent_url"]
+            row.torrent_file_path = None  # stale cached file no longer matches
+        row.is_magnet = t["is_magnet"]
+    # append any variants we didn't already have
+    store_torrents(session, movie, torrents)
+    session.flush()
+    log.info(f"Refreshed torrent links for '{movie.title}' "
+             f"({len(fresh_urls)} found)")
+    return True
 
 
 def apply_match(session: Session, movie: Movie, result: dict) -> None:
@@ -248,6 +286,93 @@ def _is_torrent_file(path: str) -> bool:
         return False
 
 
+def _download_and_add(qb: QBittorrentClient, movie: Movie, torrent: MovieTorrent,
+                      url: str, category: str) -> bool:
+    """Download a .torrent file ourselves and upload the bytes to qBittorrent.
+
+    We never hand qBittorrent the http link to fetch — the forum's signed
+    attachment.php URLs fail server-side (wrong host/key/referer) and qB just
+    reports a silent pending/failure. Downloading here lets us use the right
+    Referer and validate the file before upload."""
+    try:
+        path = str(env.torrents_dir / (_safe_filename(torrent.name) + ".torrent"))
+        download_file(url, path, referer=movie.forum_url)
+    except Exception as e:
+        log.warning(f"'{movie.title}': .torrent download failed: {e}")
+        return False
+    if not _is_torrent_file(path):
+        log.warning(f"'{movie.title}': downloaded file is not a valid .torrent "
+                    f"(looks like an HTML/error page)")
+        return False
+    torrent.torrent_file_path = path
+    return qb.add_torrent_file(path, category)
+
+
+def _fresh_link_from_forum(session: Session, movie: Movie,
+                           torrent: MovieTorrent) -> dict | None:
+    """Re-scrape the forum post (with the *current* domain) and return the
+    torrent dict that matches the one we're trying to send. The stored link can
+    go stale when the forum rotates domains/keys, so we fetch a fresh one."""
+    if not movie.forum_url:
+        return None
+    url = movie.forum_url
+    try:
+        from ..scraper.domain import ensure_current_domain
+        domain = ensure_current_domain(session)
+        if domain:
+            host = domain.replace("https://", "").replace("http://", "").strip("/")
+            p = urlsplit(movie.forum_url)
+            url = urlunsplit(("https", host, p.path, p.query, p.fragment))
+    except Exception as e:
+        log.warning(f"'{movie.title}': domain refresh failed, using stored url: {e}")
+    try:
+        soup = fetch_soup(url)
+    except Exception as e:
+        log.warning(f"'{movie.title}': re-fetch of forum post failed: {e}")
+        return None
+    items = extract_torrents(soup, url)
+    if not items:
+        return None
+    for it in items:
+        if torrent.quality and it.get("quality") == torrent.quality:
+            return it
+    return items[0]
+
+
+def _deliver_to_qbittorrent(session: Session, qb: QBittorrentClient,
+                            movie: Movie, torrent: MovieTorrent,
+                            category: str) -> bool:
+    """Send order (per project rules):
+      1. magnet — hand qBittorrent the magnet URL (it resolves via DHT/trackers)
+      2. else download the .torrent file and upload the bytes
+      3. if the download fails, fetch a fresh link from the forum, download, upload
+    A magnet link is never downloaded as a file; an http .torrent link is never
+    handed to qBittorrent to fetch itself."""
+    # 1. magnet first
+    if torrent.is_magnet:
+        if qb.add_torrent_url(torrent.torrent_url, category):
+            return True
+        log.info(f"'{movie.title}': magnet add failed — trying a .torrent file")
+
+    # 2. cached file, then the torrent's own http link
+    path = torrent.torrent_file_path
+    if path and os.path.exists(path) and _is_torrent_file(path):
+        if qb.add_torrent_file(path, category):
+            return True
+    if torrent.torrent_url and not torrent.torrent_url.startswith("magnet:"):
+        if _download_and_add(qb, movie, torrent, torrent.torrent_url, category):
+            return True
+
+    # 3. download failed / link stale → get a fresh link from the forum
+    log.info(f"'{movie.title}': fetching a fresh link from the forum")
+    match = _fresh_link_from_forum(session, movie, torrent)
+    if not match:
+        return False
+    if match.get("is_magnet"):
+        return qb.add_torrent_url(match["torrent_url"], category)
+    return _download_and_add(qb, movie, torrent, match["torrent_url"], category)
+
+
 def send_movie(session: Session, movie: Movie, torrent: MovieTorrent) -> bool:
     """Add to Radarr (metadata/monitoring) + qBittorrent (the download)."""
     ok_radarr = False
@@ -283,29 +408,7 @@ def send_movie(session: Session, movie: Movie, torrent: MovieTorrent) -> bool:
                                st.get(session, "qbittorrent_username") or "",
                                st.get(session, "qbittorrent_password") or "")
         category = st.get(session, "qbittorrent_category") or "radarr"
-        if torrent.is_magnet:
-            ok_qb = qb.add_torrent_url(torrent.torrent_url, category)
-        else:
-            path = torrent.torrent_file_path
-            if not path or not os.path.exists(path):
-                try:
-                    path = str(env.torrents_dir / (_safe_filename(torrent.name) + ".torrent"))
-                    download_file(torrent.torrent_url, path)
-                    torrent.torrent_file_path = path
-                except Exception as e:
-                    log.warning(f"Torrent file download failed, trying by URL: {e}")
-                    path = None
-            # Skip an invalid file (HTML login/error page) — it would be rejected.
-            if path and not _is_torrent_file(path):
-                log.warning(f"'{movie.title}': downloaded file is not a valid "
-                            f".torrent (looks like HTML) — falling back to URL")
-                path = None
-            ok_qb = qb.add_torrent_file(path, category) if path else False
-            if not ok_qb:
-                # File upload failed/rejected (e.g. HTTP 409 behind a reverse
-                # proxy) or no usable file — hand qBittorrent the URL instead.
-                log.info(f"'{movie.title}': retrying qBittorrent add via URL")
-                ok_qb = qb.add_torrent_url(torrent.torrent_url, category)
+        ok_qb = _deliver_to_qbittorrent(session, qb, movie, torrent, category)
         movie.added_to_qbittorrent = ok_qb
 
     movie.selected_torrent_id = torrent.id
@@ -449,13 +552,25 @@ def download_movie(session: Session, movie: Movie,
                    torrent_id: int | None = None) -> dict:
     """Manual 'download anyway' — from review queue, rejected list, library
     or search results. Bypasses the rating threshold."""
-    torrent = None
-    if torrent_id:
-        torrent = next((t for t in movie.torrents if t.id == torrent_id), None)
-    torrent = torrent or select_torrent(session, movie.torrents)
+    def pick() -> MovieTorrent | None:
+        if torrent_id:
+            t = next((t for t in movie.torrents if t.id == torrent_id), None)
+            if t:
+                return t
+        return select_torrent(session, movie.torrents)
+
+    torrent = pick()
     if not torrent:
         return {"ok": False, "error": "no torrents stored for this movie"}
     ok = send_movie(session, movie, torrent)
+    if not ok and not torrent.is_magnet and movie.forum_url:
+        # The stored attachment link likely expired (400 on download) — re-scrape
+        # the post for fresh links and retry once.
+        log.info(f"'{movie.title}': send failed, refreshing torrent links and retrying")
+        if refresh_torrents(session, movie):
+            torrent = pick()
+            if torrent:
+                ok = send_movie(session, movie, torrent)
     return {"ok": ok, "status": movie.status}
 
 
@@ -484,13 +599,16 @@ def set_imdb_id(session: Session, movie: Movie, imdb_id: str) -> dict:
 
 
 def movie_summary(movie: Movie) -> dict:
+    updated = movie.updated_at
+    ver = int(updated.timestamp()) if updated else 0
+    poster = f"/posters/{movie.poster_path}?v={ver}" if movie.poster_path else None
     return {"ok": True, "id": movie.id, "imdb_id": movie.imdb_id,
             "tmdb_id": movie.tmdb_id, "rating": movie.rating,
             "matched_title": movie.matched_title,
             "original_language": movie.original_language,
             "is_tamil_original": movie.is_tamil_original,
             "status": movie.status,
-            "poster": f"/posters/{movie.poster_path}" if movie.poster_path else None}
+            "poster": poster}
 
 
 def reset_all_data() -> dict:

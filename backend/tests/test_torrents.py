@@ -5,17 +5,14 @@ from app.scraper.torrents import extract_torrents
 BASE = "https://www.1tamilmv.cards/index.php?/forums/topic/1-test/"
 
 
-def test_fileext_format_wins_over_magnet():
+def test_magnet_wins_over_fileext():
+    # post_fileext.html has both a magnet and 4 attachment links; the magnet
+    # is now preferred so qBittorrent gets a URL it can actually fetch.
     torrents = extract_torrents(load_soup("post_fileext.html"), BASE)
-    assert len(torrents) == 2
-    assert all(t["source_format"] == "fileext" for t in torrents)
-    t720, t1080 = torrents
-    assert t720["quality"] == "720p" and t720["file_size"] == "1.2GB"
-    assert t1080["quality"] == "1080p" and t1080["codec"] == "HEVC"
-    # relative href resolved, &amp; unescaped
-    assert t1080["torrent_url"].startswith("https://www.1tamilmv.cards/")
-    assert "&key=" in t1080["torrent_url"]
-    assert "tamil" in t720["languages"]
+    assert len(torrents) == 1
+    t = torrents[0]
+    assert t["source_format"] == "magnet" and t["is_magnet"]
+    assert t["torrent_url"].startswith("magnet:?xt=urn:btih:ffad91aaaa")
 
 
 def test_magnet_fallback():

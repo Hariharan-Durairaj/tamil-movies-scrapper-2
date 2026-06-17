@@ -49,8 +49,14 @@ def fetch_json(url: str, timeout: int = 20):
     return fetch(url, timeout).json()
 
 
-def download_file(url: str, dest_path: str, timeout: int = 60) -> str:
-    resp = _session.get(url, timeout=timeout)
+def download_file(url: str, dest_path: str, timeout: int = 60,
+                  referer: str | None = None) -> str:
+    # IPS forum attachment endpoints (attachment.php / .../file/) reject
+    # requests that don't carry the originating post as the Referer — they
+    # answer 400/403 with an HTML error page instead of the .torrent. Pass the
+    # forum post URL so the download succeeds and we get a real torrent file.
+    headers = {"Referer": referer} if referer else None
+    resp = _session.get(url, timeout=timeout, headers=headers)
     resp.raise_for_status()
     with open(dest_path, "wb") as f:
         f.write(resp.content)
