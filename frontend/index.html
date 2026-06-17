@@ -4,19 +4,21 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TamilDL — Movies Downloader</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
 <div class="layout">
   <nav class="sidebar">
     <a href="#dashboard" class="logo" aria-label="TamilDL Movies Downloader">
-      <svg width="180" height="90" viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="80" cy="100" r="70" fill="#1AABCC"/>
-        <polygon points="56,72 108,100 56,128" fill="white"/>
-        <rect x="91" y="118" width="10" height="22" fill="white" rx="2"/>
-        <polygon points="78,134 101,158 124,134" fill="white"/>
-        <text x="165" y="95" font-family="system-ui, sans-serif" font-size="38" font-weight="600" fill="#1AABCC">Tamil<tspan font-weight="400" fill="#888">DL</tspan></text>
-        <text x="167" y="118" font-family="system-ui, sans-serif" font-size="11" font-weight="400" fill="#999" letter-spacing="3">MOVIES DOWNLOADER</text>
+      <svg viewBox="0 0 295 100" xmlns="http://www.w3.org/2000/svg">
+        <!-- icon: play triangle + download arrow, both centered on x=50 -->
+        <circle cx="50" cy="50" r="44" fill="#1AABCC"/>
+        <polygon points="40,26 68,42 40,58" fill="white"/>
+        <rect x="45" y="60" width="10" height="13" rx="2" fill="white"/>
+        <polygon points="36,69 64,69 50,87" fill="white"/>
+        <!-- wordmark -->
+        <text x="106" y="54" font-family="system-ui, sans-serif" font-size="38" font-weight="600" fill="#1AABCC">Tamil<tspan font-weight="400" fill="#888">DL</tspan></text>
+        <text x="108" y="76" font-family="system-ui, sans-serif" font-size="11" font-weight="400" fill="#999" letter-spacing="2.5">MOVIES DOWNLOADER</text>
       </svg>
     </a>
     <a href="#dashboard" class="nav-link" data-page="dashboard">Dashboard</a>
@@ -167,6 +169,6 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
-<script src="app.js"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>

@@ -237,26 +237,44 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9 ._()\[\]-]", "_", name)[:150]
 
 
+def _is_torrent_file(path: str) -> bool:
+    """A real .torrent is a bencoded dict — its first byte is 'd'. Forum
+    attachment links sometimes return an HTML login/error page instead, which
+    qBittorrent rejects (e.g. HTTP 409). Detect that so we can fall back."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(1) == b"d"
+    except Exception:
+        return False
+
+
 def send_movie(session: Session, movie: Movie, torrent: MovieTorrent) -> bool:
     """Add to Radarr (metadata/monitoring) + qBittorrent (the download)."""
     ok_radarr = False
     radarr_url = st.get(session, "radarr_url") or ""
     if radarr_url:
-        radarr = RadarrClient(radarr_url, st.get(session, "radarr_api_key") or "")
-        profile = st.get_int(session, "radarr_quality_profile_id") or 1
-        root = st.get(session, "radarr_root_folder") or None
-        added = None
-        if movie.tmdb_id:
-            added = radarr.add_by_tmdb(movie.tmdb_id, profile, root)
-        elif movie.imdb_id:
-            added = radarr.add_by_imdb(movie.imdb_id, profile, root)
-        if added:
+        # If the film is already in Radarr (e.g. monitored but missing a file)
+        # don't re-add it — qBittorrent will deliver the download and Radarr
+        # imports it. Otherwise add it now.
+        if radarr_lookup(session, movie):
             ok_radarr = True
             movie.added_to_radarr = True
         else:
-            movie.radarr_skip_reason = ("not_in_tmdb" if not movie.tmdb_id
-                                        else "radarr_add_failed")
-            log.warning(f"Radarr skipped for '{movie.title}': {movie.radarr_skip_reason}")
+            radarr = RadarrClient(radarr_url, st.get(session, "radarr_api_key") or "")
+            profile = st.get_int(session, "radarr_quality_profile_id") or 1
+            root = st.get(session, "radarr_root_folder") or None
+            added = None
+            if movie.tmdb_id:
+                added = radarr.add_by_tmdb(movie.tmdb_id, profile, root)
+            elif movie.imdb_id:
+                added = radarr.add_by_imdb(movie.imdb_id, profile, root)
+            if added:
+                ok_radarr = True
+                movie.added_to_radarr = True
+            else:
+                movie.radarr_skip_reason = ("not_in_tmdb" if not movie.tmdb_id
+                                            else "radarr_add_failed")
+                log.warning(f"Radarr skipped for '{movie.title}': {movie.radarr_skip_reason}")
 
     qb_url = st.get(session, "qbittorrent_url") or ""
     ok_qb = False
@@ -277,8 +295,17 @@ def send_movie(session: Session, movie: Movie, torrent: MovieTorrent) -> bool:
                 except Exception as e:
                     log.warning(f"Torrent file download failed, trying by URL: {e}")
                     path = None
-            ok_qb = (qb.add_torrent_file(path, category) if path
-                     else qb.add_torrent_url(torrent.torrent_url, category))
+            # Skip an invalid file (HTML login/error page) — it would be rejected.
+            if path and not _is_torrent_file(path):
+                log.warning(f"'{movie.title}': downloaded file is not a valid "
+                            f".torrent (looks like HTML) — falling back to URL")
+                path = None
+            ok_qb = qb.add_torrent_file(path, category) if path else False
+            if not ok_qb:
+                # File upload failed/rejected (e.g. HTTP 409 behind a reverse
+                # proxy) or no usable file — hand qBittorrent the URL instead.
+                log.info(f"'{movie.title}': retrying qBittorrent add via URL")
+                ok_qb = qb.add_torrent_url(torrent.torrent_url, category)
         movie.added_to_qbittorrent = ok_qb
 
     movie.selected_torrent_id = torrent.id
@@ -328,23 +355,38 @@ def process_topic(session: Session, topic: dict, source: str = "auto_scan",
     if movie.status in (MovieStatus.NEEDS_REVIEW, MovieStatus.UNMATCHED):
         return {"movie_id": movie.id, "title": title, "status": movie.status}
 
+    # Radarr guard. If Radarr already HAS the file, skip — never download twice.
+    # If it's in Radarr but MISSING a file, it was already approved into the
+    # library, so grab the torrent and send to qBittorrent only (send_movie
+    # detects the existing Radarr entry and won't re-add it). Rating / dub gates
+    # are bypassed here because the film is already a wanted Radarr entry.
+    rm = radarr_lookup(session, movie)
+    if rm:
+        movie.added_to_radarr = True
+        if rm.get("hasFile"):
+            movie.status = MovieStatus.IN_RADARR
+            movie.rejection_reason = "already in Radarr (downloaded)"
+            log.info(f"Skipped '{title}': {movie.rejection_reason}")
+            return {"movie_id": movie.id, "title": title, "status": movie.status}
+        # in Radarr, no file yet → fetch it via qBittorrent
+        if not auto_download:
+            movie.status = MovieStatus.QUALIFIED
+            return {"movie_id": movie.id, "title": title, "status": movie.status}
+        torrent = select_torrent(session, movie.torrents)
+        if not torrent:
+            movie.status = MovieStatus.IN_RADARR
+            movie.rejection_reason = "in Radarr (no file) — no torrent in post"
+            return {"movie_id": movie.id, "title": title, "status": movie.status}
+        log.info(f"'{title}' in Radarr without a file — sending torrent to qBittorrent")
+        send_movie(session, movie, torrent)
+        return {"movie_id": movie.id, "title": title, "status": movie.status}
+
     # Tamil-dub gate: when dubs are disabled, a non-Tamil-original (an Indian
     # film with a Tamil dub) must not be sent to Radarr.
     if not st.get_bool(session, "allow_tamil_dubs") and movie.is_tamil_original is False:
         movie.status = MovieStatus.REJECTED
         movie.rejection_reason = "Tamil dub (non-Tamil original) — dubs disabled"
         log.info(f"Rejected '{title}': {movie.rejection_reason}")
-        return {"movie_id": movie.id, "title": title, "status": movie.status}
-
-    # Duplicate guard: Radarr already has this movie → never download twice
-    rm = radarr_lookup(session, movie)
-    if rm:
-        movie.status = MovieStatus.IN_RADARR
-        movie.added_to_radarr = True
-        movie.rejection_reason = ("already in Radarr (downloaded)"
-                                  if rm.get("hasFile")
-                                  else "already in Radarr (monitored)")
-        log.info(f"Skipped '{title}': {movie.rejection_reason}")
         return {"movie_id": movie.id, "title": title, "status": movie.status}
 
     threshold = st.get_float(session, "rating_threshold")
@@ -461,10 +503,11 @@ def reset_all_data() -> dict:
         for model, name in ((MovieTorrent, "torrents"), (Movie, "movies"),
                             (LogEntry, "logs"), (MetadataCache, "metadata_cache"),
                             (TaskState, "task_state"), (DomainHistory, "domain_history")):
-            counts[name] = session.query(model).delete()
+            counts[name] = session.query(model).delete(synchronize_session=False)
         # full-scan checkpoint lives in the settings table — reset it too
         st.set_value(session, "full_scan_last_page", "0")
         session.commit()
+        session.expire_all()
 
     # wipe cached files
     removed_files = 0

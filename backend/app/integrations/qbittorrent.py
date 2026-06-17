@@ -78,7 +78,8 @@ class QBittorrentClient:
             if ok:
                 log.info("qBittorrent: torrent added (url)", category=category)
             else:
-                log.error(f"qBittorrent add url failed: HTTP {r.status_code} {r.text[:200]}")
+                log.error(f"qBittorrent add url failed: HTTP {r.status_code} "
+                          f"{r.reason} {r.text[:200]}")
             return ok
         except Exception as e:
             log.error(f"qBittorrent add url error: {e}", exc=e)
@@ -96,7 +97,8 @@ class QBittorrentClient:
             if ok:
                 log.info("qBittorrent: torrent added (file)", path=path)
             else:
-                log.error(f"qBittorrent add file failed: HTTP {r.status_code} {r.text[:200]}")
+                log.error(f"qBittorrent add file failed: HTTP {r.status_code} "
+                          f"{r.reason} {r.text[:200]}")
             return ok
         except Exception as e:
             log.error(f"qBittorrent add file error: {e}", exc=e)

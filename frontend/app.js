@@ -434,9 +434,12 @@ $("#test-qbit").onclick = async () => {
 $("#btn-reset-all").onclick = async () => {
   if (!confirm("Delete ALL data (movies, torrents, logs, cache, scan progress)?\nYour settings are kept. This cannot be undone.")) return;
   if (!confirm("Are you absolutely sure? This wipes the whole library.")) return;
+  toast("Resetting…");
   try {
     const r = await api("/system/reset-all", { method: "POST" });
-    toast(r.ok ? `Reset done — removed ${r.deleted.movies || 0} movies` : "Reset failed", !r.ok);
+    toast(r.ok ? `Reset done — removed ${(r.deleted && r.deleted.movies) || 0} movies, ${r.files_removed || 0} files` : "Reset failed", !r.ok);
+    libPage = 1;
+    $("#lib-grid") && ($("#lib-grid").innerHTML = "");
   } catch (e) { toast(e.message, true); }
 };
 
