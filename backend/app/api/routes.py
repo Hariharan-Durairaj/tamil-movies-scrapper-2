@@ -22,11 +22,18 @@ def poster_url(m: Movie) -> str | None:
     """Local poster URL with a cache-busting version. The on-disk filename is
     stable ('<id>.webp'), so when a match is corrected the file is overwritten
     but the URL would stay the same and the browser would keep showing the old
-    cached image. Appending ?v=<updated_at> changes the URL on every edit."""
-    if not m.poster_path:
-        return None
-    ver = int(m.updated_at.timestamp()) if m.updated_at else 0
-    return f"/posters/{m.poster_path}?v={ver}"
+    cached image. Appending ?v=<updated_at> changes the URL on every edit.
+
+    If the local poster is missing (the download/convert silently failed, e.g.
+    a TMDB image CDN blip), fall back to the best candidate's remote poster URL
+    so matched/rejected movies still show artwork instead of a placeholder."""
+    if m.poster_path:
+        ver = int(m.updated_at.timestamp()) if m.updated_at else 0
+        return f"/posters/{m.poster_path}?v={ver}"
+    for cand in (m.match_candidates or []):
+        if cand.get("poster_url"):
+            return cand["poster_url"]
+    return None
 
 
 def movie_dict(m: Movie, with_torrents: bool = False) -> dict:
